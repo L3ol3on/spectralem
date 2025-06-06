@@ -60,3 +60,7 @@ Government and the Länder”.
 Project: “Spectra-Bayes: A Bayesian
 statistical machine learning model for spectral reconstruction” (Project
 Leaders: Prof. Dr. Maria Kateri, Prof. Dr.-Ing. Hans-Jürgen Koß)
+
+## References
+
+"Automatic Spectral Reconstruction via Expectation-Maximization" von Kaufmann, Meißner and Kateri (2025)
