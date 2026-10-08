@@ -52,6 +52,23 @@ ggplot(pd, aes(x)) +
 
 <img src="man/figures/README-unnamed-chunk-2-1.svg" width="100%" />
 
+## Choosing the number of peaks automatically
+
+`spectralem_select()` fits several peak counts and keeps the one an information
+criterion supports (Kasterke et al., *Chemometr. Intell. Lab. Syst.* 267 (2025)
+105518): it estimates a starting count from the curvature of a smoothing spline,
+fits that count plus or minus `window`, and then adds (or removes) one peak at a
+time while the larger model is a significant improvement in both the criterion
+and the sum of squared errors.
+
+```r
+res <- spectralem_select(x, y, criterion = "bic")  # or "aic"
+res$n_peaks    # the selected number of peaks
+res$selection  # every peak count tested, with its error, BIC and AIC
+```
+
+All arguments of `spectralem()` except `K` can be passed through.
+
 ## Funding
 
 This work was developed under a Seed Fund Project (2021) of the RWTH

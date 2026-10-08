@@ -1,7 +1,7 @@
 Package: spectralem
 Type: Package
 Title: A Robust and Fast Algorithm to fit Voigt Peaks to Spectral Signals
-Version: 0.9
+Version: 0.10.0
 Authors@R: c(
     person("Jan", "Meißner", email = "philipp.meissner@rwth-aachen.de", role = c("aut", "cre"))
     )
@@ -16,7 +16,9 @@ Imports:
     R6,
     MASS,
     RcppFaddeeva,
-    pracma
+    pracma,
+    parallel,
+    stats
 RoxygenNote: 7.2.1
 Suggests:
     testthat (>= 3.0.0),
