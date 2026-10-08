@@ -92,6 +92,43 @@ failed_conditions <- function(cand, ref, criterion_absolute_tolerance,
   failed
 }
 
+# A function fitting `k` peaks to (x, y). Defined at top level so that its
+# environment holds only x, y and args: a socket cluster serializes it, with
+# that environment, to every worker.
+make_fitter <- function(x, y, args) {
+  force(x)
+  force(y)
+  force(args)
+  function(k) do.call(spectralem, c(list(x = x, y = y, K = k), args))
+}
+
+# Apply `fun` to every element of `xs`, on up to `n_cores` R processes.
+# Forks (parallel::mclapply) where the OS can; Windows cannot fork, so there a
+# socket cluster is started instead -- `fun` and its environment are then
+# serialized to the workers, which therefore must not depend on objects in
+# the caller's global environment. The package code reaches them either way
+# it can be loaded: an installed package by name (each worker loads it),
+# sources sys.source()d into an environment (as pyaxact does) whole -- but not
+# a pkgload::load_all() session. Errors in a worker are re-raised here.
+parallel_map <- function(xs, fun, n_cores, fork = .Platform$OS.type != "windows") {
+  n_cores <- min(as.integer(n_cores), length(xs))
+  if (n_cores <= 1) {
+    return(lapply(xs, fun))
+  }
+  if (fork) {
+    out <- parallel::mclapply(xs, fun, mc.cores = n_cores, mc.preschedule = FALSE)
+  } else {
+    cl <- parallel::makePSOCKcluster(n_cores)
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+    out <- parallel::parLapply(cl, xs, fun)
+  }
+  for (o in out) {
+    if (inherits(o, "try-error")) stop(attr(o, "condition"))
+    if (is.null(o)) stop("a parallel worker died without a result (out of memory?)")
+  }
+  out
+}
+
 #' Fit Voigt peaks with an automatically selected number of peaks
 #'
 #' @description
@@ -153,8 +190,12 @@ failed_conditions <- function(cand, ref, criterion_absolute_tolerance,
 #'   paper's "minimum of five spectral analyses" is \code{window = 2}
 #' @param min_peaks,max_peaks range of peak counts that may be tested
 #' @param spar,curvature_threshold passed to \code{estimate_peak_count()}
-#' @param n_cores fit the initial window's peak counts in parallel with
-#'   \code{parallel::mclapply} (forking; ignored on Windows)
+#' @param n_cores number of peak counts fitted at once, in parallel R
+#'   processes (forked with \code{parallel::mclapply}; a socket cluster on
+#'   Windows): the whole initial window, then batches of the next
+#'   \code{n_cores} counts ahead of the walk up (or down). Every fit is
+#'   deterministic and independent, so the result is identical to
+#'   \code{n_cores = 1}; counts fitted ahead but never reached are discarded.
 #' @param ... further arguments to \code{spectralem()} (not \code{K})
 #'
 #' @return The \code{spectralem()} result of the selected model, plus
@@ -219,7 +260,27 @@ spectralem_select <- function(x, y,
 
   fits <- list()
   rows <- list()
-  fit_k <- function(k) do.call(spectralem, c(list(x = x, y = y, K = k), args))
+  fit_k <- make_fitter(x, y, args)
+  # Fits made ahead of the walk, not yet part of the selection table.
+  ahead <- list()
+  fit_ahead <- function(ks) {
+    ks <- ks[!as.character(ks) %in% c(names(fits), names(ahead))]
+    if (length(ks) == 0) return(invisible())
+    res <- parallel_map(ks, fit_k, n_cores)
+    names(res) <- as.character(ks)
+    ahead[names(res)] <<- res
+  }
+  # The fit for `k`: from the batch fitted ahead, else fit the next batch.
+  fetch <- function(k, direction) {
+    key <- as.character(k)
+    if (is.null(ahead[[key]])) {
+      batch <- if (direction > 0) k:min(max_peaks, k + n_cores - 1) else k:max(min_peaks, k - n_cores + 1)
+      fit_ahead(batch)
+    }
+    res <- ahead[[key]]
+    ahead[[key]] <<- NULL
+    res
+  }
   record <- function(k, res, phase) {
     sse_raw <- sum((y - res$fit)^2)
     sse <- sse_raw / scale^2
@@ -263,15 +324,8 @@ spectralem_select <- function(x, y,
   hi <- min(max_peaks, lo + 2 * window)
   lo <- max(min_peaks, hi - 2 * window)
   ks <- lo:hi
-  window_fits <- if (n_cores > 1 && .Platform$OS.type != "windows") {
-    parallel::mclapply(ks, fit_k, mc.cores = n_cores)
-  } else {
-    lapply(ks, fit_k)
-  }
-  for (i in seq_along(ks)) {
-    if (inherits(window_fits[[i]], "try-error")) stop(window_fits[[i]])
-    record(ks[i], window_fits[[i]], "window")
-  }
+  window_fits <- parallel_map(ks, fit_k, n_cores)
+  for (i in seq_along(ks)) record(ks[i], window_fits[[i]], "window")
   # 2) Walk up from the bottom of the window -- through the counts already
   #    fitted, then beyond -- accepting a count only if it passes every
   #    enabled condition against the last accepted one, and looking
@@ -283,7 +337,7 @@ spectralem_select <- function(x, y,
   misses <- 0
   while (k < max_peaks && misses <= patience) {
     k <- k + 1
-    if (is.null(fits[[as.character(k)]])) record(k, fit_k(k), "up")
+    if (is.null(fits[[as.character(k)]])) record(k, fetch(k, +1), "up")
     failed <- failures(k, best)
     mark(k, length(failed) == 0, best, failed)
     if (length(failed) == 0) {
@@ -305,7 +359,7 @@ spectralem_select <- function(x, y,
     k <- best
     if (k <= min_peaks && reason == "conditions") reason <- "min_peaks"
     while (k > min_peaks) {
-      record(k - 1, fit_k(k - 1), "down")
+      record(k - 1, fetch(k - 1, -1), "down")
       failed <- failures(k, k - 1)
       # this row is the smaller model; it is moved to when the larger one fails
       mark(k - 1, length(failed) > 0, k, failed)

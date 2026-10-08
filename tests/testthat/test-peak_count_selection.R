@@ -120,3 +120,31 @@ test_that("patience accepts a later peak that beats the last accepted model", {
   # with patience, the search tries up to `patience` counts past the selected one
   expect_lte(max(res3$selection$n_peaks), res3$n_peaks + 4)
 })
+
+
+test_that("fitting peak counts in parallel batches changes nothing but the time", {
+  data <- six_peaks()
+  one <- spectralem_select(data$x, data$y, n_cores = 1, print_progress = FALSE)
+  four <- spectralem_select(data$x, data$y, n_cores = 4, print_progress = FALSE)
+  expect_identical(one$selection, four$selection)
+  expect_identical(one$decision, four$decision)
+  expect_equal(one$fit, four$fit)
+})
+
+
+test_that("parallel_map's socket-cluster path (used on Windows) matches lapply", {
+  # Socket-cluster workers are fresh R processes. With the sources loaded into
+  # a plain environment (as pyaxact does), that environment is serialized to
+  # them whole; an installed package is instead loaded there by name. A
+  # load_all() session is neither, so load the sources the pyaxact way.
+  r_dir <- test_path("..", "..", "R")
+  skip_if_not(dir.exists(r_dir), "package sources not available")
+  sem <- new.env(parent = globalenv())
+  for (f in list.files(r_dir, pattern = "[.][Rr]$", full.names = TRUE)) sys.source(f, envir = sem)
+
+  data <- six_peaks()
+  fit_k <- sem$make_fitter(data$x, data$y, list(print_progress = FALSE))
+  sequential <- lapply(5:6, fit_k)
+  cluster <- sem$parallel_map(5:6, fit_k, 2, fork = FALSE)
+  expect_equal(lapply(cluster, `[[`, "fit"), lapply(sequential, `[[`, "fit"))
+})

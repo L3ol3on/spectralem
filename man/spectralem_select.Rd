@@ -52,8 +52,12 @@ paper's "minimum of five spectral analyses" is \code{window = 2}}
 
 \item{spar, curvature_threshold}{passed to \code{estimate_peak_count()}}
 
-\item{n_cores}{fit the initial window's peak counts in parallel with
-\code{parallel::mclapply} (forking; ignored on Windows)}
+\item{n_cores}{number of peak counts fitted at once, in parallel R
+processes (forked with \code{parallel::mclapply}; a socket cluster on
+Windows): the whole initial window, then batches of the next
+\code{n_cores} counts ahead of the walk up (or down). Every fit is
+deterministic and independent, so the result is identical to
+\code{n_cores = 1}; counts fitted ahead but never reached are discarded.}
 
 \item{...}{further arguments to \code{spectralem()} (not \code{K})}
 }
