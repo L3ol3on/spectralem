@@ -68,9 +68,11 @@ ggplot(pd, aes(x)) +
 `spectralem_select()` fits several peak counts and keeps the one an information
 criterion supports (Kasterke et al., *Chemometr. Intell. Lab. Syst.* 267 (2025)
 105518): it estimates a starting count from the curvature of a smoothing spline,
-fits that count plus or minus `window`, and then adds (or removes) one peak at a
-time while the larger model is a significant improvement in both the criterion
-and the sum of squared errors.
+fits that count plus or minus `window`, and then steps up (or down) one peak at a
+time, keeping a larger model only if it passes every enabled condition: an
+absolute and a relative improvement of the criterion, and a drop in the sum of
+squared errors (each switched off with `NULL`; the strictest enabled one decides).
+`res$decision` says which conditions limited the number of peaks.
 
 ```r
 res <- spectralem_select(x, y, criterion = "bic")  # or "aic"
