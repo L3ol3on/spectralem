@@ -8,7 +8,8 @@ spectralem_select(
   x,
   y,
   criterion = c("bic", "aic"),
-  criterion_tolerance = 0.001,
+  criterion_absolute_tolerance = NULL,
+  criterion_relative_tolerance = 0.001,
   sse_tolerance = 0.01,
   sse_tolerance_mode = c("absolute", "relative"),
   patience = 3,
@@ -29,9 +30,14 @@ spectralem_select(
 \item{criterion}{\code{"bic"} or \code{"aic"}. AIC penalizes each extra
 parameter less, so it tends to select more peaks.}
 
-\item{criterion_tolerance}{minimum relative improvement of the criterion}
+\item{criterion_absolute_tolerance}{minimum improvement of the criterion,
+in criterion units; \code{NULL} disables this condition}
 
-\item{sse_tolerance}{minimum drop of the sum of squared errors}
+\item{criterion_relative_tolerance}{minimum improvement of the criterion as
+a fraction of its magnitude; \code{NULL} disables this condition}
+
+\item{sse_tolerance}{minimum drop of the sum of squared errors;
+\code{NULL} disables this condition}
 
 \item{sse_tolerance_mode}{\code{"absolute"} (drop in normalized SSE) or
 \code{"relative"} (drop as a fraction of the previous SSE)}
@@ -59,8 +65,19 @@ The \code{spectralem()} result of the selected model, plus
   \item selection - a data frame with one row per tested peak count:
         \code{n_peaks}, \code{phase} (window / up / down), \code{sse}
         (normalized), \code{sse_raw} (in the units of \code{y}),
-        \code{bic}, \code{aic}, \code{accepted} (whether the search moved
-        to this peak count; \code{NA} for window fits) and \code{selected}
+        \code{bic}, \code{aic}, \code{compared_to} (the other model in
+        the comparison that decided this row), \code{failed} (the
+        conditions the model with MORE peaks failed in that comparison,
+        comma separated; empty if it passed all; \code{NA} for window
+        fits), \code{accepted} (whether the search moved to this peak
+        count) and \code{selected}. Upward rows are the larger model;
+        downward rows the smaller one.
+  \item decision - why the search stopped at \code{n_peaks}: a list with
+        \code{reason} (\code{"conditions"}, \code{"max_peaks"} or
+        \code{"min_peaks"}) and
+        \code{limiting_conditions}, a named count of the conditions failed by
+        the rejected models with more peaks than the selected one -- the
+        condition(s) that limited the number of peaks
 }
 }
 \description{
@@ -70,23 +87,33 @@ information criterion (Kasterke et al. 2025, Section 5):
   \item Normalize the spectrum by its maximum.
   \item Estimate a coarse peak count \eqn{K_0} with \code{estimate_peak_count()}.
   \item Fit every \eqn{K} in \eqn{K_0 \pm} \code{window} (shifted to stay
-        within [\code{min_peaks}, \code{max_peaks}]) and take the one with
-        the lowest criterion.
-  \item If that model is at the upper edge of the window, keep adding one
-        peak at a time. A peak count is accepted only if it improves
-        significantly on the last accepted model (see below). After an
-        insignificant one, up to \code{patience} further peak counts are
-        tried; the first significant one is accepted and the search goes
-        on, otherwise the last accepted model is selected.
-  \item If it is at the lower edge, remove one peak at a time as long as
-        the larger model is NOT a significant improvement on the smaller
-        one -- the mirror image of the upward rule.
+        within [\code{min_peaks}, \code{max_peaks}]), in parallel with
+        \code{n_cores} -- the paper's "minimum of five spectral analyses".
+  \item Starting from the smallest of them, step up one peak at a time
+        (reusing the window's fits, then fitting further counts). A count
+        is accepted only if it is a significant improvement on the last
+        accepted model (see below). After one that is not, up to
+        \code{patience} further counts are tried; the first significant
+        one is accepted and the search goes on, otherwise the last
+        accepted model is selected. (The paper instead takes the window's
+        lowest criterion and extends only from its upper edge; walking the
+        window with the conditions means the enabled conditions always
+        decide.)
+  \item If nothing above the smallest window count was accepted, remove
+        one peak at a time as long as the larger model is NOT a
+        significant improvement on the smaller one -- the mirror image of
+        the upward rule.
 }
 Model \eqn{B} is a significant improvement on model \eqn{A} (fewer peaks)
-when both
-\deqn{(C_A - C_B) / |C_A| > \code{criterion\_tolerance}}
-and the drop in the sum of squared errors, \eqn{S_A - S_B} (absolute) or
-\eqn{(S_A - S_B) / S_A} (relative), exceeds \code{sse_tolerance}. Here
+when it passes every ENABLED condition (a \code{NULL} tolerance disables
+one), so the strictest enabled condition decides:
+\itemize{
+  \item absolute criterion gain: \eqn{C_A - C_B >} \code{criterion_absolute_tolerance}
+  \item relative criterion gain: \eqn{(C_A - C_B) / |C_A| >} \code{criterion_relative_tolerance}
+  \item error drop: \eqn{S_A - S_B} (absolute) or \eqn{(S_A - S_B) / S_A}
+        (relative) \eqn{>} \code{sse_tolerance}
+}
+Here
 \eqn{C} is BIC \eqn{= h \log(S/h) + p \log h} or AIC
 \eqn{= h \log(S/h) + 2p}, \eqn{S} the sum of squared errors of the
 max-normalized spectrum, \eqn{h} the number of points and \eqn{p = 4K}

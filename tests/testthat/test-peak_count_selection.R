@@ -31,28 +31,61 @@ test_that("estimate_peak_count ignores x order and returns at least one", {
 })
 
 
-test_that("is_significant_improvement needs both the criterion and the error to improve", {
+test_that("failed_conditions names every enabled condition a model fails", {
   ref <- list(criterion = -1000, sse = 0.05)
-  # criterion 2 % better, error 0.02 lower -> significant
-  expect_true(is_significant_improvement(list(criterion = -1020, sse = 0.03), ref, 1e-3, 0.01, "absolute"))
-  # criterion better, error drop 0.005 < 0.01 -> not
-  expect_false(is_significant_improvement(list(criterion = -1020, sse = 0.045), ref, 1e-3, 0.01, "absolute"))
-  # ... but 10 % of the remaining error > 5 % -> significant in relative mode
-  expect_true(is_significant_improvement(list(criterion = -1020, sse = 0.045), ref, 1e-3, 0.05, "relative"))
-  # error much lower but criterion worse -> not
-  expect_false(is_significant_improvement(list(criterion = -990, sse = 0.01), ref, 1e-3, 0.01, "absolute"))
+  fc <- function(cand, abs_tol = NULL, rel_tol = 1e-3, sse_tol = 0.01, mode = "absolute") {
+    failed_conditions(cand, ref, abs_tol, rel_tol, sse_tol, mode)
+  }
+  # criterion 2 % (20 units) better, error 0.02 lower -> passes everything
+  expect_equal(fc(list(criterion = -1020, sse = 0.03), abs_tol = 10), character(0))
+  # error drop 0.005 < 0.01
+  expect_equal(fc(list(criterion = -1020, sse = 0.045)), "sse")
+  # ... but 10 % of the remaining error > 5 % in relative mode
+  expect_equal(fc(list(criterion = -1020, sse = 0.045), sse_tol = 0.05, mode = "relative"), character(0))
+  # criterion worse -> fails both criterion conditions, not the error one
+  expect_equal(fc(list(criterion = -990, sse = 0.01), abs_tol = 10), c("criterion_absolute", "criterion_relative"))
+  # 5 units better: passes relative 0.1 % (0.5 %) but not absolute 10
+  expect_equal(fc(list(criterion = -1005, sse = 0.03), abs_tol = 10), "criterion_absolute")
+  # a NULL tolerance switches the condition off
+  expect_equal(fc(list(criterion = -1020, sse = 0.045), sse_tol = NULL), character(0))
+})
+
+
+test_that("spectralem_select refuses to run with every condition switched off", {
+  data <- six_peaks()
+  expect_error(
+    spectralem_select(data$x, data$y, criterion_relative_tolerance = NULL, sse_tolerance = NULL),
+    "enable at least one condition"
+  )
 })
 
 
 test_that("spectralem_select recovers the true number of peaks", {
   data <- six_peaks()
   res <- spectralem_select(data$x, data$y, criterion = "bic",
-                           sse_tolerance = 0, print_progress = FALSE)
+                           sse_tolerance = NULL, print_progress = FALSE)
   expect_equal(res$n_peaks, 6)
   expect_equal(sort(res$fit_params$pos), data$params$pos, tol = 1e-3)
   expect_equal(sum(res$selection$selected), 1)
-  expect_true(all(c("n_peaks", "phase", "sse", "sse_raw", "bic", "aic", "accepted", "selected")
-                  %in% names(res$selection)))
+  expect_true(all(c("n_peaks", "phase", "sse", "sse_raw", "bic", "aic", "compared_to", "failed",
+                    "accepted", "selected") %in% names(res$selection)))
+  # the conditions, not the cap, stopped the search, and the record says which
+  expect_equal(res$decision$reason, "conditions")
+  rejected_above <- res$selection[res$selection$n_peaks > res$n_peaks, ]
+  expect_true(all(nzchar(rejected_above$failed)))
+  expect_equal(sum(unlist(res$decision$limiting_conditions)) > 0, TRUE)
+})
+
+
+test_that("the strictest enabled condition decides", {
+  data <- six_peaks()
+  # An absolute criterion threshold no extra peak can reach stops the search
+  # at the bottom of the window (or below), and is named as the reason.
+  res <- spectralem_select(data$x, data$y, criterion_absolute_tolerance = 1e9,
+                           criterion_relative_tolerance = NULL, sse_tolerance = NULL,
+                           print_progress = FALSE, max_peaks = 10)
+  expect_lt(res$n_peaks, 6)
+  expect_equal(names(res$decision$limiting_conditions), "criterion_absolute")
 })
 
 
@@ -60,7 +93,7 @@ test_that("spectralem_select searches downward from a coarse guess that is too h
   data <- six_peaks()
   # A curvature threshold this low counts noise ripples, so K0 is far too high.
   res <- spectralem_select(data$x, data$y, curvature_threshold = 1e-4, window = 1,
-                           sse_tolerance = 0, print_progress = FALSE, max_peaks = 12)
+                           sse_tolerance = NULL, print_progress = FALSE, max_peaks = 12)
   expect_gt(res$coarse_estimate, 8)
   expect_true("down" %in% res$selection$phase || res$n_peaks < min(res$selection$n_peaks) + 2)
   expect_lte(res$n_peaks, 7)
@@ -79,9 +112,9 @@ test_that("patience accepts a later peak that beats the last accepted model", {
   # Five peaks with a sixth so close to the fifth that the pair needs two
   # Voigt profiles: the search must look past one weak addition.
   data <- six_peaks()
-  res0 <- spectralem_select(data$x, data$y, patience = 0, sse_tolerance = 0,
+  res0 <- spectralem_select(data$x, data$y, patience = 0, sse_tolerance = NULL,
                             print_progress = FALSE)
-  res3 <- spectralem_select(data$x, data$y, patience = 3, sse_tolerance = 0,
+  res3 <- spectralem_select(data$x, data$y, patience = 3, sse_tolerance = NULL,
                             print_progress = FALSE)
   expect_gte(res3$n_peaks, res0$n_peaks)
   # with patience, the search tries up to `patience` counts past the selected one

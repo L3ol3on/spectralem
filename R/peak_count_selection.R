@@ -62,18 +62,34 @@ information_criterion <- function(sse, h, p, criterion) {
   h * log(max(sse, .Machine$double.xmin) / h) + penalty * p
 }
 
-# Is model `cand` (more peaks) a significant improvement over `ref`?
-# Both the criterion and the SSE must improve by more than their tolerance
-# (the paper stops on EITHER a negligible criterion gain OR an insignificant
-# SSE drop, so continuing needs both).
-is_significant_improvement <- function(cand, ref, criterion_tolerance,
-                                       sse_tolerance, sse_tolerance_mode) {
-  crit_gain <- (ref$criterion - cand$criterion) / max(abs(ref$criterion), .Machine$double.eps)
+# Which of the enabled conditions does model `cand` (more peaks) fail against
+# `ref`? A condition whose tolerance is NULL is disabled. An empty result means
+# `cand` is a significant improvement; since every enabled condition must
+# hold, the strictest one decides.
+#   criterion_absolute:  C_ref - C_cand                > criterion_absolute_tolerance
+#   criterion_relative: (C_ref - C_cand) / |C_ref|     > criterion_relative_tolerance
+#   sse (absolute):      S_ref - S_cand                > sse_tolerance
+#   sse (relative):     (S_ref - S_cand) / S_ref       > sse_tolerance
+failed_conditions <- function(cand, ref, criterion_absolute_tolerance,
+                              criterion_relative_tolerance, sse_tolerance,
+                              sse_tolerance_mode) {
+  crit_gain <- ref$criterion - cand$criterion
+  failed <- character(0)
+  if (!is.null(criterion_absolute_tolerance) && !(crit_gain > criterion_absolute_tolerance)) {
+    failed <- c(failed, "criterion_absolute")
+  }
+  rel_gain <- crit_gain / max(abs(ref$criterion), .Machine$double.eps)
+  if (!is.null(criterion_relative_tolerance) && !(rel_gain > criterion_relative_tolerance)) {
+    failed <- c(failed, "criterion_relative")
+  }
   sse_gain <- ref$sse - cand$sse
   if (sse_tolerance_mode == "relative") {
     sse_gain <- sse_gain / max(ref$sse, .Machine$double.xmin)
   }
-  crit_gain > criterion_tolerance && sse_gain > sse_tolerance
+  if (!is.null(sse_tolerance) && !(sse_gain > sse_tolerance)) {
+    failed <- c(failed, "sse")
+  }
+  failed
 }
 
 #' Fit Voigt peaks with an automatically selected number of peaks
@@ -85,23 +101,33 @@ is_significant_improvement <- function(cand, ref, criterion_tolerance,
 #'   \item Normalize the spectrum by its maximum.
 #'   \item Estimate a coarse peak count \eqn{K_0} with \code{estimate_peak_count()}.
 #'   \item Fit every \eqn{K} in \eqn{K_0 \pm} \code{window} (shifted to stay
-#'         within [\code{min_peaks}, \code{max_peaks}]) and take the one with
-#'         the lowest criterion.
-#'   \item If that model is at the upper edge of the window, keep adding one
-#'         peak at a time. A peak count is accepted only if it improves
-#'         significantly on the last accepted model (see below). After an
-#'         insignificant one, up to \code{patience} further peak counts are
-#'         tried; the first significant one is accepted and the search goes
-#'         on, otherwise the last accepted model is selected.
-#'   \item If it is at the lower edge, remove one peak at a time as long as
-#'         the larger model is NOT a significant improvement on the smaller
-#'         one -- the mirror image of the upward rule.
+#'         within [\code{min_peaks}, \code{max_peaks}]), in parallel with
+#'         \code{n_cores} -- the paper's "minimum of five spectral analyses".
+#'   \item Starting from the smallest of them, step up one peak at a time
+#'         (reusing the window's fits, then fitting further counts). A count
+#'         is accepted only if it is a significant improvement on the last
+#'         accepted model (see below). After one that is not, up to
+#'         \code{patience} further counts are tried; the first significant
+#'         one is accepted and the search goes on, otherwise the last
+#'         accepted model is selected. (The paper instead takes the window's
+#'         lowest criterion and extends only from its upper edge; walking the
+#'         window with the conditions means the enabled conditions always
+#'         decide.)
+#'   \item If nothing above the smallest window count was accepted, remove
+#'         one peak at a time as long as the larger model is NOT a
+#'         significant improvement on the smaller one -- the mirror image of
+#'         the upward rule.
 #' }
 #' Model \eqn{B} is a significant improvement on model \eqn{A} (fewer peaks)
-#' when both
-#' \deqn{(C_A - C_B) / |C_A| > \code{criterion\_tolerance}}
-#' and the drop in the sum of squared errors, \eqn{S_A - S_B} (absolute) or
-#' \eqn{(S_A - S_B) / S_A} (relative), exceeds \code{sse_tolerance}. Here
+#' when it passes every ENABLED condition (a \code{NULL} tolerance disables
+#' one), so the strictest enabled condition decides:
+#' \itemize{
+#'   \item absolute criterion gain: \eqn{C_A - C_B >} \code{criterion_absolute_tolerance}
+#'   \item relative criterion gain: \eqn{(C_A - C_B) / |C_A| >} \code{criterion_relative_tolerance}
+#'   \item error drop: \eqn{S_A - S_B} (absolute) or \eqn{(S_A - S_B) / S_A}
+#'         (relative) \eqn{>} \code{sse_tolerance}
+#' }
+#' Here
 #' \eqn{C} is BIC \eqn{= h \log(S/h) + p \log h} or AIC
 #' \eqn{= h \log(S/h) + 2p}, \eqn{S} the sum of squared errors of the
 #' max-normalized spectrum, \eqn{h} the number of points and \eqn{p = 4K}
@@ -113,8 +139,12 @@ is_significant_improvement <- function(cand, ref, criterion_tolerance,
 #' @param y the function values of the signal at \code{x}
 #' @param criterion \code{"bic"} or \code{"aic"}. AIC penalizes each extra
 #'   parameter less, so it tends to select more peaks.
-#' @param criterion_tolerance minimum relative improvement of the criterion
-#' @param sse_tolerance minimum drop of the sum of squared errors
+#' @param criterion_absolute_tolerance minimum improvement of the criterion,
+#'   in criterion units; \code{NULL} disables this condition
+#' @param criterion_relative_tolerance minimum improvement of the criterion as
+#'   a fraction of its magnitude; \code{NULL} disables this condition
+#' @param sse_tolerance minimum drop of the sum of squared errors;
+#'   \code{NULL} disables this condition
 #' @param sse_tolerance_mode \code{"absolute"} (drop in normalized SSE) or
 #'   \code{"relative"} (drop as a fraction of the previous SSE)
 #' @param patience number of further peak counts tried after an
@@ -134,13 +164,25 @@ is_significant_improvement <- function(cand, ref, criterion_tolerance,
 #'   \item selection - a data frame with one row per tested peak count:
 #'         \code{n_peaks}, \code{phase} (window / up / down), \code{sse}
 #'         (normalized), \code{sse_raw} (in the units of \code{y}),
-#'         \code{bic}, \code{aic}, \code{accepted} (whether the search moved
-#'         to this peak count; \code{NA} for window fits) and \code{selected}
+#'         \code{bic}, \code{aic}, \code{compared_to} (the other model in
+#'         the comparison that decided this row), \code{failed} (the
+#'         conditions the model with MORE peaks failed in that comparison,
+#'         comma separated; empty if it passed all; \code{NA} for window
+#'         fits), \code{accepted} (whether the search moved to this peak
+#'         count) and \code{selected}. Upward rows are the larger model;
+#'         downward rows the smaller one.
+#'   \item decision - why the search stopped at \code{n_peaks}: a list with
+#'         \code{reason} (\code{"conditions"}, \code{"max_peaks"} or
+#'         \code{"min_peaks"}) and
+#'         \code{limiting_conditions}, a named count of the conditions failed by
+#'         the rejected models with more peaks than the selected one -- the
+#'         condition(s) that limited the number of peaks
 #' }
 #' @export
 spectralem_select <- function(x, y,
                               criterion = c("bic", "aic"),
-                              criterion_tolerance = 1e-3,
+                              criterion_absolute_tolerance = NULL,
+                              criterion_relative_tolerance = 1e-3,
                               sse_tolerance = 0.01,
                               sse_tolerance_mode = c("absolute", "relative"),
                               patience = 3,
@@ -153,6 +195,11 @@ spectralem_select <- function(x, y,
                               ...) {
   criterion <- match.arg(criterion)
   sse_tolerance_mode <- match.arg(sse_tolerance_mode)
+  if (is.null(criterion_absolute_tolerance) && is.null(criterion_relative_tolerance) &&
+      is.null(sse_tolerance)) {
+    stop("enable at least one condition (criterion_absolute_tolerance, ",
+         "criterion_relative_tolerance or sse_tolerance); with none, every extra peak is accepted")
+  }
   args <- list(...)
   if ("K" %in% names(args)) {
     stop("spectralem_select() chooses K itself; do not pass it")
@@ -182,6 +229,7 @@ spectralem_select <- function(x, y,
       n_peaks = k, phase = phase, sse = sse, sse_raw = sse_raw,
       bic = information_criterion(sse, h, p, "bic"),
       aic = information_criterion(sse, h, p, "aic"),
+      compared_to = NA_integer_, failed = NA_character_,
       accepted = NA, selected = FALSE
     )
   }
@@ -190,15 +238,23 @@ spectralem_select <- function(x, y,
     r <- tab[tab$n_peaks == k, ]
     list(sse = r$sse, criterion = r[[criterion]])
   }
-  mark <- function(k, accepted) {
+  mark <- function(k, accepted, compared_to, failed) {
     for (i in seq_along(rows)) {
-      if (rows[[i]]$n_peaks == k) rows[[i]]$accepted <<- accepted
+      if (rows[[i]]$n_peaks == k) {
+        rows[[i]]$accepted <<- accepted
+        rows[[i]]$compared_to <<- as.integer(compared_to)
+        rows[[i]]$failed <<- paste(failed, collapse = ",")
+      }
     }
   }
-  significant <- function(more, fewer) {
-    is_significant_improvement(row_of(more), row_of(fewer),
-                               criterion_tolerance, sse_tolerance, sse_tolerance_mode)
+  failures <- function(more, fewer) {
+    failed_conditions(row_of(more), row_of(fewer), criterion_absolute_tolerance,
+                      criterion_relative_tolerance, sse_tolerance, sse_tolerance_mode)
   }
+  # Models with more peaks than the one finally selected that the conditions
+  # rejected, with what they failed: the record of what limited the count.
+  rejected <- list()
+  reject <- function(k, failed) rejected[[length(rejected) + 1]] <<- list(n_peaks = k, failed = failed)
 
   # 1) Coarse estimate and initial window.
   k0 <- estimate_peak_count(x, y, spar = spar, curvature_threshold = curvature_threshold)
@@ -216,40 +272,57 @@ spectralem_select <- function(x, y,
     if (inherits(window_fits[[i]], "try-error")) stop(window_fits[[i]])
     record(ks[i], window_fits[[i]], "window")
   }
-  tab <- do.call(rbind, rows)
-  best <- tab$n_peaks[which.min(tab[[criterion]])]
-
-  # 2) Upward: accept only significant improvements over the last accepted
-  #    model, looking `patience` peak counts past an insignificant one.
-  if (best == hi) {
-    k <- best
-    misses <- 0
-    while (k < max_peaks && misses <= patience) {
-      k <- k + 1
-      record(k, fit_k(k), "up")
-      if (significant(k, best)) {
-        mark(k, TRUE)
-        best <- k
-        misses <- 0
-      } else {
-        mark(k, FALSE)
-        misses <- misses + 1
-      }
+  # 2) Walk up from the bottom of the window -- through the counts already
+  #    fitted, then beyond -- accepting a count only if it passes every
+  #    enabled condition against the last accepted one, and looking
+  #    `patience` counts past one that does not. (The paper takes the window's
+  #    lowest criterion instead; walking it with the conditions means the
+  #    enabled conditions always decide, wherever the best model lies.)
+  best <- lo
+  k <- lo
+  misses <- 0
+  while (k < max_peaks && misses <= patience) {
+    k <- k + 1
+    if (is.null(fits[[as.character(k)]])) record(k, fit_k(k), "up")
+    failed <- failures(k, best)
+    mark(k, length(failed) == 0, best, failed)
+    if (length(failed) == 0) {
+      best <- k
+      misses <- 0
+    } else {
+      reject(k, failed)
+      misses <- misses + 1
     }
   }
+  # Ran out of room before `patience` was used up: the cap, not the
+  # conditions, ended the search.
+  reason <- if (misses <= patience) "max_peaks" else "conditions"
 
-  # 3) Downward: drop a peak while the larger model does not earn it.
+  # 3) Downward: nothing above the bottom of the window was worth it, so
+  #    check the bottom itself: drop a peak while the larger model does not
+  #    earn it.
   if (best == lo) {
     k <- best
+    if (k <= min_peaks && reason == "conditions") reason <- "min_peaks"
     while (k > min_peaks) {
       record(k - 1, fit_k(k - 1), "down")
-      keep_larger <- significant(k, k - 1)
-      mark(k - 1, !keep_larger)
-      if (keep_larger) break
+      failed <- failures(k, k - 1)
+      # this row is the smaller model; it is moved to when the larger one fails
+      mark(k - 1, length(failed) > 0, k, failed)
+      if (length(failed) == 0) break
+      reject(k, failed)
+      reason <- "conditions"
       k <- k - 1
       best <- k
+      if (k <= min_peaks) reason <- "min_peaks"
     }
   }
+
+  limiting <- unlist(lapply(rejected, function(r) if (r$n_peaks > best) r$failed))
+  decision <- list(
+    reason = reason,
+    limiting_conditions = as.list(table(factor(limiting, levels = unique(limiting))))
+  )
 
   selection <- do.call(rbind, rows)
   selection$selected <- selection$n_peaks == best
@@ -260,5 +333,6 @@ spectralem_select <- function(x, y,
   out$n_peaks <- best
   out$coarse_estimate <- k0
   out$selection <- selection
+  out$decision <- decision
   out
 }
